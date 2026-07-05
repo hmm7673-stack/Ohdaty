@@ -1,0 +1,67 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && myRole() in ['admin', 'assistant_manager'];
+    }
+
+    function isWarehouse() {
+      return isSignedIn() && myRole() == 'warehouse_manager';
+    }
+
+    function isTechnician() {
+      return isSignedIn() && myRole() == 'technician';
+    }
+
+    // ---------------- USERS ----------------
+    match /users/{userId} {
+      // أي مستخدم مسجل يقدر يقرأ بياناته الأساسية (للعرض بالنقل)
+      allow read: if isSignedIn();
+      // فقط الأدمن / مساعد المدير ينشئ أو يعدّل يوزرات
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ---------------- ASSETS ----------------
+    match /assets/{assetId} {
+      // الأدمن ومساعد المدير ومسؤول المستودع يشوفون كل شي
+      allow read: if isAdmin() || isWarehouse();
+      // الفني يشوف فقط أجهزته الحالية أو الأجهزة المعلّقة له
+      allow read: if isTechnician() &&
+        (resource.data.currentHolderId == request.auth.uid);
+
+      // لا كتابة مباشرة من العميل إطلاقاً — كل التعديلات عبر Cloud Functions
+      allow write: if false;
+    }
+
+    // ---------------- TRANSFERS ----------------
+    match /transfers/{transferId} {
+      allow read: if isAdmin() || isWarehouse() ||
+        (isSignedIn() && (resource.data.fromUserId == request.auth.uid ||
+                          resource.data.toUserId == request.auth.uid));
+      // الإنشاء والتحديث فقط عبر Cloud Functions (Admin SDK يتجاوز القواعد أصلاً)
+      allow write: if false;
+    }
+
+    // ---------------- AUDIT LOG ----------------
+    match /auditLog/{logId} {
+      allow read: if isAdmin();
+      allow write: if false; // Cloud Functions فقط
+    }
+
+    // ---------------- NOTIFICATIONS ----------------
+    match /notifications/{notifId} {
+      allow read, update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false; // الإنشاء عبر Cloud Functions فقط
+    }
+  }
+}
